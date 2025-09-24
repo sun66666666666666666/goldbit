@@ -344,7 +344,7 @@
         cursor = data?.data?.cursor || null;
         els.nextCursor.textContent = cursor || '-';
         if(!hasNext) break;
-        await new Promise(r=>setTimeout(r, 220)); // 轻微延时，避免风控
+        await new Promise(r=>setTimeout(r, 0)); // 轻微延时，避免风控
       }
       const elapsed = performance.now()-started;
       return {matched, totalCount, elapsed, pages: page};
@@ -548,3 +548,4 @@
   </script>
 </body>
 </html>
+
