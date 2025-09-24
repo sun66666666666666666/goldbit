@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>OKX 订单筛选 · sats 阈值计算</title>
+  <meta name="description" content="按 sats 单价阈值筛选 OKX 挂单，统计数量、所需 BTC 与 USD（币安实时价）。内置 CORS 代理设置、零配置公共代理回退、连接测试与自检用例。" />
+  <style>
+    :root{
+      --bg:#0b0c10; --card:#12141a; --muted:#7b8191; --text:#e9edf1; --accent:#6ae3ff; --ok:#70f0a5; --warn:#ffd166; --err:#ff8080;
+      --radius:18px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#0b0c10,#0d1117);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Apple Color Emoji","Segoe UI Emoji"}
+    header{position:sticky;top:0;background:rgba(13,17,23,.85);backdrop-filter:saturate(180%) blur(10px);z-index:10;border-bottom:1px solid #1e232e}
+    .container{max-width:980px;margin:0 auto;padding:14px}
+    h1{font-size:20px;margin:6px 0 8px;letter-spacing:.3px}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .card{background:var(--card);border:1px solid #222836;border-radius:var(--radius);padding:14px}
+    input,select,button{height:44px;border-radius:12px;border:1px solid #263042;background:#0f131a;color:var(--text);padding:0 14px;font-size:15px;outline:none}
+    input::placeholder{color:#6b7280}
+    button{background:linear-gradient(180deg,#1c88ff,#1167ff);border:none;padding:0 18px;font-weight:600;letter-spacing:.2px;cursor:pointer}
+    button.secondary{background:#151b22;border:1px solid #283040}
+    button.ghost{background:transparent;border:1px dashed #2b3342}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
+    .stat{background:#0f131a;border:1px solid #222836;border-radius:14px;padding:12px}
+    .stat .label{color:var(--muted);font-size:12px}
+    .stat .value{font-size:17px;font-weight:700;margin-top:6px;word-break:break-all}
+    .list{display:grid;grid-template-columns:1fr;gap:10px;margin:14px 0 30px}
+    .item{border:1px solid #222836;background:#0f131a;border-radius:14px;padding:12px}
+    .item .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+    .badge{font-size:12px;color:#111;background:var(--accent);padding:4px 8px;border-radius:999px;font-weight:700}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    .muted{color:var(--muted)}
+    .footer{color:#8a93a3;font-size:12px;text-align:center;margin:26px 0}
+    details{background:#0f131a;border:1px dashed #2a3242;border-radius:12px;padding:10px}
+    summary{cursor:pointer;color:#9fb3ff}
+    .spinner{width:18px;height:18px;border:2px solid #3a4560;border-top-color:#8ab4ff;border-radius:50%;display:inline-block;animation:spin .9s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @media (min-width:680px){
+      .stats{grid-template-columns:repeat(4,1fr)}
+      .list{grid-template-columns:repeat(2,1fr)}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container row" style="justify-content:space-between">
+      <div>
+        <h1>OKX 挂单筛选 · sats 阈值</h1>
+        <div class="muted" style="font-size:12px">数据源：OKX Web3 PRI API · 价格：币安 BTCUSDT 实时 · 自适配手机</div>
+      </div>
+      <div class="row" style="gap:8px">
+        <button id="settingsBtn" class="ghost">设置</button>
+        <div id="status" class="muted mono" style="font-size:12px">就绪</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <input id="threshold" type="number" min="1" step="1" placeholder="输入单价阈值（sats，例如 1000）" style="flex:1" />
+        <button id="runBtn">开始计算</button>
+        <button id="resetBtn" class="secondary">重置</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">当前币安价 (BTCUSDT)</div><div class="value mono" id="btcPrice">-</div></div>
+        <div class="stat"><div class="label">总挂单数 (data.count)</div><div class="value mono" id="totalCount">-</div></div>
+        <div class="stat"><div class="label">满足条件的币数量</div><div class="value mono" id="matchAmount">-</div></div>
+        <div class="stat"><div class="label">满足条件所需 BTC</div><div class="value mono" id="matchBTC">-</div></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">按当前币安价折合 USD</div><div class="value mono" id="matchUSD">-</div></div>
+        <div class="stat"><div class="label">满足条件的挂单条数</div><div class="value mono" id="matchItems">-</div></div>
+        <div class="stat"><div class="label">抓取用时</div><div class="value mono" id="elapsed">-</div></div>
+        <div class="stat"><div class="label">下一页游标 (Base64)</div><div class="value mono" id="nextCursor">-</div></div>
+      </div>
+    </div>
+
+    <details style="margin-top:10px">
+      <summary>展开查看符合阈值的挂单明细（前 50 条展示）</summary>
+      <div class="list" id="resultList"></div>
+    </details>
+
+    <details id="settings" style="margin-top:10px">
+      <summary>连接与设置</summary>
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="gap:8px">
+          <input id="proxyInput" placeholder="可选：代理前缀。支持 4 种：1) https://x.workers.dev 2) https://x.workers.dev/?u= 3) https://x.workers.dev/forward?target= 4) https://x.workers.dev/?q={url}" style="flex:1" />
+          <input id="maxPages" type="number" min="1" step="1" value="30" title="最大分页数上限" style="width:120px" />
+          <label class="row" style="gap:6px"><input id="useSample" type="checkbox"/> <span class="muted">网络异常时用样例数据</span></label>
+          <label class="row" style="gap:6px"><input id="useBuiltins" type="checkbox" checked/> <span class="muted">未配置代理时启用公共代理回退</span></label>
+          <button id="saveSettings">保存设置</button>
+          <button id="testConn" class="secondary">连接测试</button>
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px">若 GitHub Pages 报 <span class="mono" style="color:var(--err)">TypeError: Failed to fetch</span>，多半是 <b>CORS</b>。本页已内置“零配置公共代理回退”，可一键启用（默认开启）。也可使用 Cloudflare Workers 反代以获得更稳定的访问。</div>
+      </div>
+
+      <details style="margin-top:10px">
+        <summary>Cloudflare Workers 代理模板（复制即用）</summary>
+        <pre class="mono" style="white-space:pre-wrap;font-size:12px;line-height:1.45;background:#0f131a;border:1px dashed #2a3242;border-radius:12px;padding:12px">export default {
+  async fetch(req) {
+    const url = new URL(req.url);
+    // 支持多种参数名：u / url / target / q
+    const key = ['u','url','target','q'].find(k=>url.searchParams.has(k));
+    const target = key ? url.searchParams.get(key) : null;
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': '*',
+      'access-control-allow-methods': 'GET,HEAD,POST,OPTIONS'
+    };
+    if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
+    if (!target) return new Response('Missing target, try ?u= or ?url=', { status: 400, headers: cors });
+    const res = await fetch(target, { headers: { 'accept': 'application/json' }});
+    return new Response(await res.arrayBuffer(), { status: res.status, headers: { ...cors, 'content-type': res.headers.get('content-type') || 'application/json' } });
+  }
+}</pre>
+      </details>
+    </details>
+
+    <details style="margin-top:10px">
+      <summary>自检 / Tests（内置单元测试，不影响业务）</summary>
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="gap:8px">
+          <button id="runTests">运行自检</button>
+          <div class="muted" style="font-size:12px">覆盖：Base64 游标 / URL 构造 / 过滤与汇总 / 代理拼接 / USD 换算 / 公共代理回退 / 异常回退</div>
+        </div>
+        <div id="testOut" class="mono" style="margin-top:10px;white-space:pre-wrap"></div>
+      </div>
+    </details>
+
+    <details style="margin-top:10px">
+      <summary>调试工具 / Debug</summary>
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button id="debugProbe" class="secondary">只取首页(不分页)调试</button>
+          <button id="debugShowLast" class="secondary">查看最近一次响应</button>
+          <span class="muted" style="font-size:12px">用于排查“可访问但抓不到数据/为空”的情况</span>
+        </div>
+        <div id="debugOut" class="mono" style="margin-top:10px;white-space:pre-wrap"></div>
+      </div>
+    </details>
+
+    <div class="footer">提示：首次请求的 cursor 是 <span class="mono">MA==</span>（即数字 0 的 Base64）。每次响应都会返回下一页的 <span class="mono">data.cursor</span> 与 <span class="mono">hasNext</span> 标记。若跨域失败，可使用“公共代理回退”或自建 Cloudflare Workers 代理。</div>
+  </main>
+
+  <script>
+    // ========================= 常量与状态 =========================
+    const els = {
+      status: document.getElementById('status'),
+      btcPrice: document.getElementById('btcPrice'),
+      totalCount: document.getElementById('totalCount'),
+      matchAmount: document.getElementById('matchAmount'),
+      matchBTC: document.getElementById('matchBTC'),
+      matchUSD: document.getElementById('matchUSD'),
+      matchItems: document.getElementById('matchItems'),
+      elapsed: document.getElementById('elapsed'),
+      nextCursor: document.getElementById('nextCursor'),
+      list: document.getElementById('resultList'),
+      threshold: document.getElementById('threshold'),
+      runBtn: document.getElementById('runBtn'),
+      resetBtn: document.getElementById('resetBtn'),
+      proxyInput: document.getElementById('proxyInput'),
+      maxPages: document.getElementById('maxPages'),
+      useSample: document.getElementById('useSample'),
+      useBuiltins: document.getElementById('useBuiltins'),
+      saveSettings: document.getElementById('saveSettings'),
+      testConn: document.getElementById('testConn'),
+      runTests: document.getElementById('runTests'),
+      settingsBtn: document.getElementById('settingsBtn'),
+      testOut: document.getElementById('testOut'),
+      debugProbe: document.getElementById('debugProbe'),
+      debugShowLast: document.getElementById('debugShowLast'),
+      debugOut: document.getElementById('debugOut')
+    };
+
+    const OKX_BASE = 'https://web3.okx.com/priapi/v1/nft/inscription/ordi-rc20/detail/items';
+    const TICKER = '₿\u061c'; // 与示例完全一致
+
+    const settings = {
+      get proxy(){ return localStorage.getItem('proxyUrl') || '' },
+      set proxy(v){ localStorage.setItem('proxyUrl', (v||'').trim()) },
+      get maxPages(){ return Number(localStorage.getItem('maxPages')||'30') },
+      set maxPages(v){ localStorage.setItem('maxPages', String(Math.max(1, Number(v)||1))) },
+      get useSample(){ return localStorage.getItem('useSample') === '1' },
+      set useSample(v){ localStorage.setItem('useSample', v?'1':'0') },
+      get useBuiltins(){ return localStorage.getItem('useBuiltins') !== '0' }, // 默认开启
+      set useBuiltins(v){ localStorage.setItem('useBuiltins', v?'1':'0') }
+    };
+
+    // ============ 样例首页数据（用于离线自检/网络异常回退，不改动原始逻辑） ============
+    const SAMPLE_PAGE_1 = {"code":0,"data":{"chain":0,"count":162,"cursor":"MjE=","hasNext":true,"items":[{"amount":"1566","btcNftType":"2","chain":0,"contractAddress":"33U66KU5hi94szaebiTShvVTDGVsnZur7q","createOn":1758586763000,"floorPrice":"895","inscriptionIdProtocol":"","inscriptionNum":"105274461","lastPrice":"0","listTime":1758586763000,"meta":"","name":"#105274461","nftId":"46592290231160946","ownerAddress":"bc1p72kvanap3qh9gsjdlww70q80pc0u00mv0kxt2g6rqjqrhpw0uxvq0pjqna","project":"1242809","protocol":"","status":"1","ticker":"₿؜","tickerIcon":"https://static.coinall.ltd/cdn/web3/currency/token/small/0-91718facf5320ddea07095051d8c7412269dfeb6790d9059b8e79a2daf5b5878i0-1?v=1746426001048","tickerId":"","tickerType":"0","tokenId":"2c44ebadb26fb16cf0b7bf6e09a3bd11868bbaa3790186d27f1e17f4ec8002d3i0","tokenStandard":"5","totalPrice":{"currency":"BTC","currencyUrl":"https://static.coinall.ltd/cdn/wallet/logo/BTC.png","price":"0.014094","satPrice":"1409400","usdPrice":"1602.5343102"},"txHash":"","type":"21","unitPrice":{"currency":"BTC","currencyUrl":"https://static.coinall.ltd/cdn/wallet/logo/BTC.png","price":"0.000009","satPrice":"900","usdPrice":"1.0233297"}}]}}; // 仅保留首条，足够跑测试
+
+    // ========================= 工具函数 =========================
+    function fmt(n, d=0){ if(n===null||n===undefined||isNaN(n)) return '-'; return Number(n).toLocaleString(undefined,{maximumFractionDigits:d, minimumFractionDigits:d}); }
+    function fmtAuto(n){ if(n===null||n===undefined||isNaN(n)) return '-'; const abs=Math.abs(Number(n)); const d = abs>=100?2:abs>=1?4:8; return Number(n).toLocaleString(undefined,{maximumFractionDigits:d}); }
+
+    function buildRawUrl(cursorB64){
+      const p = new URLSearchParams({
+        cursor: cursorB64,
+        orderType: '1',
+        pageSize: '20',
+        ticker: TICKER,
+        tickerId: '',
+        tickerType: '0',
+        showPending: 'false',
+        t: String(Date.now())
+      });
+      return OKX_BASE + '?' + p.toString();
+    }
+
+    // 自定义代理拼接（用户在设置中提供）
+    function proxifyCustom(rawUrl){
+      const p = (settings.proxy||'').trim();
+      if(!p) return null;
+      if(p.includes('{url}')){ return p.replace('{url}', encodeURIComponent(rawUrl)); }
+      if(/[?&][^=]*=$/.test(p) || /=\s*$/.test(p)){ return p + encodeURIComponent(rawUrl); }
+      if(p.includes('?')){ return p + '&u=' + encodeURIComponent(rawUrl); }
+      return p.replace(/\/$/,'') + '?u=' + encodeURIComponent(rawUrl);
+    }
+
+    // 内置“零配置”公共代理候选（仅 GET，稳定性较自建 Worker 略差）
+    function builtinCandidates(rawUrl){
+      if(!settings.useBuiltins) return [];
+      const candidates = [];
+      // 1) isomorphic-git CORS 代理（路径前缀式）
+      candidates.push('https://cors.isomorphic-git.org/' + rawUrl);
+      // 2) Jina 的 r.jina.ai（在路径里带 http:// 前缀）
+      const noScheme = rawUrl.replace(/^https?:\/\//,'');
+      candidates.push('https://r.jina.ai/http://' + noScheme);
+      // 3) allorigins （以 url= 参数传入，raw 模式）
+      candidates.push('https://api.allorigins.win/raw?url=' + encodeURIComponent(rawUrl));
+      return candidates;
+    }
+
+    async function fetchJson(url, {timeoutMs=12000}={}){
+      const ac = new AbortController();
+      const t = setTimeout(()=>ac.abort(), timeoutMs);
+      try{
+        const res = await fetch(url, { signal: ac.signal, headers:{'accept':'application/json'}, mode:'cors', credentials:'omit', referrerPolicy:'no-referrer'});
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        // 某些公共代理以 text/plain 返回 JSON，仍可解析
+        const text = await res.text();
+        try{ return JSON.parse(text); }catch{ return JSON.parse(text.replace(/^[^\[{]+/,'')); }
+      }finally{ clearTimeout(t); }
+    }
+
+    function normalizeOkxResponse(j){
+      // 处理 r.jina.ai / allorigins 等代理把真实 JSON 放到 data.content 的情况
+      try{
+        if(j && j.data && typeof j.data.content === 'string'){
+          const inner = JSON.parse(j.data.content);
+          // 只有当内层长得像 OKX 返回（含 code / data.items ）时才采用
+          if(inner && typeof inner === 'object' && inner.data && Array.isArray(inner.data.items)){
+            return inner;
+          }
+        }
+      }catch{ /* 忽略解析失败，直接返回外层 */ }
+      return j; // 默认直接返回
+    }
+
+    async function getBTCUSDT(){
+      const pools = [
+        'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
+        'https://api-gcp.binance.com/api/v3/ticker/price?symbol=BTCUSDT'
+      ];
+      let lastErr;
+      for(const u of pools){
+        try{ const j = await fetchJson(u, {timeoutMs:8000}); return Number(j.price); }catch(e){ lastErr=e; }
+      }
+      throw lastErr || new Error('无法获取币安价');
+    }
+
+    function buildCandidates(cursorB64){
+      const raw = buildRawUrl(cursorB64);
+      const list = [];
+      const custom = proxifyCustom(raw);
+      if(custom) list.push(custom);
+      // 内置公共代理（当未配置自定义代理或自定义失败时都会尝试）
+      list.push(...builtinCandidates(raw));
+      // 最后尝试直连（有机会命中允许跨域的环境）
+      list.push(raw);
+      return list;
+    }
+
+    async function tryFetchOkx(cursorB64, pageIndex){
+      const candidates = buildCandidates(cursorB64);
+      let lastErr; let tried = []; let lastResponseText = null; let lastUrl = null;
+      for(const u of candidates){
+        tried.push(new URL(u).origin);
+        try{
+          lastUrl = u;
+          const ac = new AbortController();
+          const t = setTimeout(()=>ac.abort(), 15000);
+          const res = await fetch(u, { signal: ac.signal, headers:{'accept':'application/json'}, mode:'cors', credentials:'omit', referrerPolicy:'no-referrer'});
+          clearTimeout(t);
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          lastResponseText = await res.text();
+          let j;
+          try{ j = JSON.parse(lastResponseText); }
+          catch { j = JSON.parse(lastResponseText.replace(/^[^\[{]+/,'')); }
+          const normalized = normalizeOkxResponse(j);
+          window.__LAST_OKX_RAW__ = { url:u, text:lastResponseText, json:j, normalized };
+          return normalized;
+        }catch(e){ lastErr = e; }
+      }
+      if(settings.useSample && pageIndex===1){ window.__LAST_OKX_RAW__ = { url:'SAMPLE_PAGE_1', text: JSON.stringify(SAMPLE_PAGE_1), json: SAMPLE_PAGE_1, normalized: SAMPLE_PAGE_1 }; return SAMPLE_PAGE_1; }
+      const msg = `OKX 请求失败：${lastErr?.message||'未知错误'}。已尝试：`+ tried.join(' → ');
+      throw new Error(msg + (lastUrl?`。最后尝试 URL: ${lastUrl}`:'') + '。可在“连接与设置”中填写自建代理前缀以提升稳定性。');
+    }
+
+    async function fetchAll(thresholdSats){
+      let cursor = btoa('0'); // 初始页：0 → MA==
+      let hasNext = true;
+      let totalCount = 0;
+      const matched = [];
+      const started = performance.now();
+      let page = 0;
+      while(hasNext){
+        if(page >= settings.maxPages){ break; }
+        els.status.innerHTML = `抓取第 ${page+1} 页 <span class="spinner"></span>`;
+        const data = await tryFetchOkx(cursor, page+1);
+        page++;
+        if(page===1){ totalCount = data?.data?.count ?? 0; }
+        const items = data?.data?.items ?? [];
+        for(const it of items){
+          const unitSats = Number(it?.unitPrice?.satPrice ?? 0);
+          if(unitSats <= thresholdSats){
+            matched.push({
+              name: it?.name,
+              amount: Number(it?.amount ?? 0),
+              unitSats,
+              totalBTC: Number(it?.totalPrice?.price ?? 0),
+              owner: it?.ownerAddress,
+              tokenId: it?.tokenId,
+              icon: it?.tickerIcon
+            });
+          }
+        }
+        hasNext = Boolean(data?.data?.hasNext);
+        cursor = data?.data?.cursor || null;
+        els.nextCursor.textContent = cursor || '-';
+        if(!hasNext) break;
+        await new Promise(r=>setTimeout(r, 220)); // 轻微延时，避免风控
+      }
+      const elapsed = performance.now()-started;
+      return {matched, totalCount, elapsed, pages: page};
+    }
+
+    function renderList(items){
+      els.list.innerHTML = '';
+      const show = items.slice(0,50);
+      for(const it of show){
+        const div = document.createElement('div');
+        div.className='item';
+        div.innerHTML = `
+          <div class="top">
+            <div class="row" style="gap:8px;align-items:center">
+              <img src="${it.icon}" alt="icon" style="width:26px;height:26px;border-radius:8px;border:1px solid #2a3242"/>
+              <strong>${it.name || ''}</strong>
+              <span class="badge">${fmt(it.unitSats)} sats</span>
+            </div>
+            <div class="muted mono" style="font-size:12px">${(it.owner||'').slice(0,10)}…</div>
+          </div>
+          <div class="row" style="margin-top:8px;gap:12px;flex-wrap:wrap">
+            <div class="muted">数量 <b class="mono">${fmt(it.amount)}</b></div>
+            <div class="muted">该单需 <b class="mono">${fmtAuto(it.totalBTC)} BTC</b></div>
+            <div class="muted mono" style="overflow-wrap:anywhere">${it.tokenId}</div>
+          </div>
+        `;
+        els.list.appendChild(div);
+      }
+    }
+
+    async function run(){
+      try{
+        const thresholdSats = Number(els.threshold.value);
+        if(!thresholdSats || thresholdSats<=0) return alert('请输入正确的 sats 阈值（正整数）');
+        els.runBtn.disabled = true; els.resetBtn.disabled = true;
+        els.status.textContent = '获取币安价…';
+        const price = await getBTCUSDT();
+        els.btcPrice.textContent = price ? `${fmt(price,2)} USDT` : '-';
+        els.status.textContent = '分页抓取 OKX 数据…';
+        const {matched, totalCount, elapsed} = await fetchAll(thresholdSats);
+        const totalAmount = matched.reduce((a,b)=>a + (Number(b.amount)||0), 0);
+        const totalBTC = matched.reduce((a,b)=>a + (Number(b.totalBTC)||0), 0);
+        const totalUSD = totalBTC * (price||0);
+        els.totalCount.textContent = fmt(totalCount);
+        els.matchAmount.textContent = fmt(totalAmount);
+        els.matchBTC.textContent = fmtAuto(totalBTC);
+        els.matchUSD.textContent = price? fmt(totalUSD,2) : '-';
+        els.matchItems.textContent = fmt(matched.length);
+        els.elapsed.textContent = (elapsed/1000).toFixed(2)+ ' s';
+        renderList(matched);
+        els.status.textContent = '完成';
+      }catch(err){
+        console.error(err);
+        els.status.innerHTML = `<span style="color:var(--err)">错误：${err.message}</span>`;
+      }finally{
+        els.runBtn.disabled = false; els.resetBtn.disabled = false;
+      }
+    }
+
+    // ========================= 事件绑定 =========================
+    els.runBtn.addEventListener('click', run);
+    els.resetBtn.addEventListener('click', ()=>{
+      els.threshold.value = '';
+      els.btcPrice.textContent = els.totalCount.textContent = els.matchAmount.textContent = els.matchBTC.textContent = els.matchUSD.textContent = els.matchItems.textContent = els.elapsed.textContent = els.nextCursor.textContent = '-';
+      els.list.innerHTML = '';
+      els.status.textContent = '就绪';
+      els.debugOut.textContent='';
+    });
+    els.settingsBtn.addEventListener('click', ()=>{
+      const d = document.getElementById('settings');
+      if(d) d.open = true;
+      d?.scrollIntoView({behavior:'smooth'});
+    });
+
+    // 调试按钮
+    els.debugProbe.addEventListener('click', async ()=>{
+      els.debugOut.textContent = '探测中…';
+      try{
+        const firstCursor = btoa('0');
+        const cands = buildCandidates(firstCursor);
+        const raw = buildRawUrl(firstCursor);
+        const j = await tryFetchOkx(firstCursor, 1); // 已经是 normalized
+        const items = j?.data?.items || [];
+        const first = items[0] || null;
+        const lines = [];
+        lines.push('Raw URL      : '+ raw);
+        lines.push('Candidates   :');
+        cands.forEach((x,i)=> lines.push(`  ${i+1}. ${x}`));
+        lines.push('data.count   : '+ (j?.data?.count ?? 'N/A'));
+        lines.push('items.length : '+ items.length);
+        if(first){
+          lines.push('first.unitPrice.satPrice : '+ (first?.unitPrice?.satPrice ?? 'N/A'));
+          lines.push('first.totalPrice.price   : '+ (first?.totalPrice?.price ?? 'N/A'));
+          lines.push('first.amount             : '+ (first?.amount ?? 'N/A'));
+        } else {
+          lines.push('注意：items 为空。若 data.count>0 但 items.length=0，说明该页没有数据；可检查 cursor 或 API 参数。');
+        }
+        els.debugOut.textContent = lines.join('\n');
+      }catch(e){
+        els.debugOut.textContent = '❌ 调试失败：'+ e.message;
+      }
+    });
+
+    els.debugShowLast.addEventListener('click', ()=>{
+      const snap = window.__LAST_OKX_RAW__;
+      if(!snap){ els.debugOut.textContent = '暂无最近响应快照'; return; }
+      const head = `最后一次 URL:\n${snap.url}\n\n`;
+      try{
+        const j = snap.normalized || snap.json;
+        const pretty = JSON.stringify({ code:j.code, count:j?.data?.count, hasNext:j?.data?.hasNext, cursor:j?.data?.cursor, first:j?.data?.items?.[0] }, null, 2);
+        els.debugOut.textContent = head + pretty;
+      }catch{
+        els.debugOut.textContent = head + (snap.text?.slice(0,2000) || '(no body)');
+      }
+    });
+
+    // 设置区
+    function syncSettingsUI(){
+      els.proxyInput.value = settings.proxy;
+      els.maxPages.value = String(settings.maxPages);
+      els.useSample.checked = settings.useSample;
+      els.useBuiltins.checked = settings.useBuiltins;
+    }
+    els.saveSettings.addEventListener('click', ()=>{
+      settings.proxy = els.proxyInput.value;
+      settings.maxPages = Number(els.maxPages.value);
+      settings.useSample = els.useSample.checked;
+      settings.useBuiltins = els.useBuiltins.checked;
+      els.status.textContent = '设置已保存';
+    });
+    els.testConn.addEventListener('click', async ()=>{
+      try{
+        els.status.innerHTML = '连接测试… <span class="spinner"></span>';
+        const j = await tryFetchOkx(btoa('0'), 1);
+        const cnt = j?.data?.items?.length ?? 0;
+        els.status.textContent = `连接正常，返回 ${cnt} 条`;
+      }catch(e){
+        els.status.innerHTML = `<span style="color:var(--err)">连接失败：${e.message}</span>`;
+      }
+    });
+
+    // ========================= 自检测试 =========================
+    function assert(cond, msg){ if(!cond) throw new Error(msg); }
+    function log(out, msg){ out.push('✓ '+msg); }
+    async function runSelfTests(){
+      const out=[];
+      // 1) Base64 游标
+      assert(btoa('0')==='MA==', 'btoa(0) 应为 MA=='); log(out,'Base64 游标 OK');
+      // 2) URL 构造参数
+      const raw = buildRawUrl('MA=='); const u = new URL(raw);
+      assert(u.searchParams.get('cursor')==='MA==', 'cursor 参数错误');
+      assert(u.searchParams.get('orderType')==='1', 'orderType 应为 1');
+      assert(u.searchParams.get('pageSize')==='20', 'pageSize 应为 20');
+      assert(u.searchParams.get('ticker')===TICKER, 'ticker 编码异常'); log(out,'URL 构造 OK');
+      // 3) 过滤与汇总（用样例数据 + 阈值 1000 应命中 900 sats 的条目）
+      const items = SAMPLE_PAGE_1?.data?.items || [];
+      const matched = items.filter(it=> Number(it?.unitPrice?.satPrice||0) <= 1000);
+      const sumBTC = matched.reduce((a,b)=> a + Number(b?.totalPrice?.price||0), 0);
+      const sumAmt = matched.reduce((a,b)=> a + Number(b?.amount||0), 0);
+      assert(matched.length>=1, '应至少命中 1 条样例');
+      assert(sumBTC>0 && sumAmt>0, '样例汇总应大于 0'); log(out,'过滤与汇总 OK');
+      // 4) 自定义代理拼接（原有）
+      const prev = settings.proxy; settings.proxy = 'https://x.workers.dev/'; const px = proxifyCustom(raw);
+      assert(px && px.startsWith('https://x.workers.dev/') && px.includes(encodeURIComponent('https://')),'自定义代理拼接异常'); settings.proxy = prev; log(out,'自定义代理拼接 OK');
+      // 5) USD 换算（用伪价格）
+      const mockUSD = (sumBTC * 50000); assert(mockUSD > 0, 'USD 换算错误'); log(out,'USD 换算 OK');
+      // 6) 代理前缀含 ?u=
+      settings.proxy = 'https://x.workers.dev/?u='; const p1 = proxifyCustom(raw); assert(p1 && p1.startsWith('https://x.workers.dev/?u='),'?u= 形式拼接异常'); settings.proxy = prev; log(out,'代理 ?u= 形式 OK');
+      // 7) 代理前缀含其它参数名
+      settings.proxy = 'https://x.workers.dev/forward?target='; const p2 = proxifyCustom(raw); assert(p2 && p2.includes('forward?target='),'自定义参数名拼接异常'); settings.proxy = prev; log(out,'代理自定义参数名 OK');
+      // 8) 占位符 {url}
+      settings.proxy = 'https://x.workers.dev/?q={url}'; const p3 = proxifyCustom(raw); assert(p3 && p3.includes('?q='),'占位符替换异常'); settings.proxy = prev; log(out,'代理占位符 OK');
+      // 9) 零配置公共代理候选
+      settings.useBuiltins = true; settings.proxy = ''; const builtins = builtinCandidates(raw);
+      assert(builtins.length>=3, '公共代理候选不足');
+      assert(builtins[0].startsWith('https://cors.isomorphic-git.org/'),'内置 isomorphic 代理异常');
+      assert(builtins[1].startsWith('https://r.jina.ai/'),'内置 r.jina 代理异常');
+      assert(builtins[2].startsWith('https://api.allorigins.win/'),'内置 allorigins 代理异常');
+      log(out,'零配置公共代理候选 OK');
+      // 10) 空数据健壮性
+      const EMPTY = { code:0, data:{ count:0, hasNext:false, cursor:null, items:[] } };
+      const items0 = EMPTY?.data?.items || [];
+      assert(Array.isArray(items0) && items0.length===0, '空 items 判定失败');
+      log(out,'空数据健壮性 OK');
+      // 11) 代理包壳响应（data.content 为字符串 JSON）
+      const WRAPPED = { code:200, data:{ content: JSON.stringify(SAMPLE_PAGE_1) } };
+      const unwrapped = normalizeOkxResponse(WRAPPED);
+      assert(unwrapped && unwrapped.data && Array.isArray(unwrapped.data.items) && unwrapped.data.items.length>=1, '包壳响应解包失败');
+      log(out,'包壳响应解包 OK');
+      return out.join('\n');
+    }
+
+    els.runTests.addEventListener('click', async ()=>{
+      els.testOut.textContent = '运行中…';
+      try{ const r = await runSelfTests(); els.testOut.textContent = r + '\n全部通过'; }
+      catch(e){ els.testOut.textContent = '❌ 测试失败：'+ e.message; }
+    });
+
+    // 默认值与首次引导
+    window.addEventListener('load',()=>{ els.threshold.value = 1000; syncSettingsUI(); });
+  </script>
+</body>
+</html>
