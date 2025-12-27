@@ -6,6 +6,8 @@ import type { ComputeResult, OkxResponse } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const PAGE_SIZE = 20; // 与 OKX pageSize=20 保持一致
+
 function clampInt(n: number, min: number, max: number) {
   const x = Number.isFinite(n) ? n : min;
   return Math.max(min, Math.min(max, Math.trunc(x)));
@@ -28,7 +30,6 @@ async function getBTCUSDT(): Promise<number> {
       );
       const j = parseJsonLoose(text);
       const p = Number(j?.price);
-
       if (!Number.isFinite(p) || p <= 0) throw new Error("Bad BTCUSDT price");
       return p;
     } catch (e) {
@@ -63,13 +64,13 @@ export async function GET(req: Request) {
     50_000_000
   );
 
-  const maxPages = clampInt(
-    Number(u.searchParams.get("maxPages") ?? "30"),
-    1,
-    120
-  );
+  // ✅ maxPages 现在变成可选：不传就自动拉到 OKX 全部页
+  const hasMaxPagesParam = u.searchParams.has("maxPages");
+  let maxPages = hasMaxPagesParam
+    ? clampInt(Number(u.searchParams.get("maxPages") ?? "30"), 1, 5000)
+    : 1_000_000; // 先给个很大值，等拿到 count 再自动修正
 
-  // 服务端硬截止，避免函数跑太久导致超时/体验差
+  // ✅ 仍保留硬截止，避免函数被平台强行掐断
   const hardDeadlineMs = clampInt(
     Number(u.searchParams.get("deadlineMs") ?? "18000"),
     4000,
@@ -95,7 +96,6 @@ export async function GET(req: Request) {
     btcusdt = null;
   }
 
-  // cursor 允许为 null（TS 严格模式下必须显式标注）
   let cursor: string | null = "MA=="; // btoa('0')
   let hasNext = true;
 
@@ -104,13 +104,11 @@ export async function GET(req: Request) {
   let pagesFetched = 0;
 
   while (hasNext && pagesFetched < maxPages) {
-    // 超时保护
     if (Date.now() - started > hardDeadlineMs) {
       warnings.push(`Stopped early due to deadlineMs=${hardDeadlineMs}`);
       break;
     }
 
-    // cursor 判空，确保 fetchOkxPage 入参永远是 string
     if (!cursor) break;
 
     const data = await fetchOkxPage(cursor);
@@ -118,13 +116,19 @@ export async function GET(req: Request) {
 
     if (pagesFetched === 1) {
       totalCount = data?.data?.count ?? 0;
+
+      // ✅ 自动模式：拿到 count 后，计算 OKX 理论总页数
+      // 这样就是“OKX 有多少页就拉多少页”
+      if (!hasMaxPagesParam && totalCount > 0) {
+        const expectedPages = Math.ceil(totalCount / PAGE_SIZE);
+        // 给一点缓冲，避免 count 变化导致少拉
+        maxPages = expectedPages + 2;
+      }
     }
 
     const items = data?.data?.items ?? [];
     for (const it of items) {
       const unitSats = Number(it?.unitPrice?.satPrice ?? 0);
-
-      // 过滤：unit sats <= threshold
       if (unitSats > 0 && unitSats <= threshold) {
         matched.push({
           name: it?.name ?? "",
@@ -171,7 +175,6 @@ export async function GET(req: Request) {
     warnings
   };
 
-  // CDN 短缓存 + SWR，既快又稳
   return new NextResponse(JSON.stringify(result), {
     headers: {
       "content-type": "application/json; charset=utf-8",
