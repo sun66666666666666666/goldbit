@@ -9,6 +9,7 @@ function fmt(n: any, d = 0) {
   if (!Number.isFinite(x)) return "-";
   return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 }
+
 function fmtAuto(n: any) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "-";
@@ -19,7 +20,6 @@ function fmtAuto(n: any) {
 
 export default function Page() {
   const [threshold, setThreshold] = useState(1000);
-  const [maxPages, setMaxPages] = useState(30);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("就绪");
   const [data, setData] = useState<Result | null>(null);
@@ -31,14 +31,18 @@ export default function Page() {
     setErr(null);
     setLoading(true);
     setStatus("计算中…");
+
     try {
+      // ✅ 只传 threshold。服务端会根据 OKX 的 count / hasNext 自动拉完所有页
       const q = new URLSearchParams({
-        threshold: String(threshold),
-        maxPages: String(maxPages)
+        threshold: String(threshold)
       });
+
       const r = await fetch(`/api/compute?${q.toString()}`, { cache: "no-store" });
       const j = await r.json();
+
       if (!r.ok) throw new Error(j?.error ?? "Request failed");
+
       setData(j);
       setStatus("完成");
     } catch (e: any) {
@@ -49,9 +53,17 @@ export default function Page() {
     }
   }
 
+  function reset() {
+    setThreshold(1000);
+    setData(null);
+    setErr(null);
+    setStatus("就绪");
+  }
+
   return (
     <main style={{ maxWidth: 980, margin: "0 auto", padding: 16, fontFamily: "system-ui" }}>
       <h2 style={{ margin: "8px 0" }}>OKX 挂单筛选 · sats 阈值（Vercel 服务器代理版）</h2>
+
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <input
           type="number"
@@ -60,17 +72,15 @@ export default function Page() {
           min={1}
           step={1}
           placeholder="阈值（sats）"
-          style={{ height: 42, padding: "0 12px", borderRadius: 10, border: "1px solid #ddd", width: 260 }}
+          style={{
+            height: 42,
+            padding: "0 12px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            width: 260
+          }}
         />
-        <input
-          type="number"
-          value={maxPages}
-          onChange={(e) => setMaxPages(Number(e.target.value))}
-          min={1}
-          step={1}
-          style={{ height: 42, padding: "0 12px", borderRadius: 10, border: "1px solid #ddd", width: 140 }}
-          title="最多拉多少页（服务端分页）"
-        />
+
         <button
           onClick={run}
           disabled={loading}
@@ -87,7 +97,28 @@ export default function Page() {
         >
           {loading ? "计算中…" : "开始计算"}
         </button>
+
+        <button
+          onClick={reset}
+          disabled={loading}
+          style={{
+            height: 42,
+            padding: "0 16px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "#fff",
+            cursor: loading ? "not-allowed" : "pointer",
+            fontWeight: 700
+          }}
+        >
+          重置
+        </button>
+
         <span style={{ color: "#555" }}>{status}</span>
+      </div>
+
+      <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+        说明：本页不再限制最大页数，服务端会按 OKX 返回的 <code>count/hasNext</code> 自动拉取全部页（仍有 <code>deadlineMs</code> 保护，避免平台超时）。
       </div>
 
       {err && (
@@ -110,11 +141,21 @@ export default function Page() {
           </div>
 
           {warnings.length > 0 && (
-            <div style={{ marginTop: 12, padding: 12, border: "1px solid #ffe08a", borderRadius: 10, background: "#fffaf0" }}>
+            <div
+              style={{
+                marginTop: 12,
+                padding: 12,
+                border: "1px solid #ffe08a",
+                borderRadius: 10,
+                background: "#fffaf0"
+              }}
+            >
               <b>Warnings</b>
               <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
                 {warnings.map((w, i) => (
-                  <li key={i} style={{ color: "#7a4b00" }}>{w}</li>
+                  <li key={i} style={{ color: "#7a4b00" }}>
+                    {w}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -129,21 +170,45 @@ export default function Page() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       {it.icon ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={it.icon} alt="icon" width={26} height={26} style={{ borderRadius: 8, border: "1px solid #eee" }} />
+                        <img
+                          src={it.icon}
+                          alt="icon"
+                          width={26}
+                          height={26}
+                          style={{ borderRadius: 8, border: "1px solid #eee" }}
+                        />
                       ) : null}
+
                       <b>{it.name}</b>
-                      <span style={{ padding: "2px 8px", borderRadius: 999, background: "#e8f2ff", color: "#0b57d0", fontWeight: 700 }}>
+
+                      <span
+                        style={{
+                          padding: "2px 8px",
+                          borderRadius: 999,
+                          background: "#e8f2ff",
+                          color: "#0b57d0",
+                          fontWeight: 700
+                        }}
+                      >
                         {fmt(it.unitSats)} sats
                       </span>
                     </div>
+
                     <div style={{ color: "#666", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
                       {(it.owner ?? "").slice(0, 12)}…
                     </div>
                   </div>
+
                   <div style={{ marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap", color: "#444" }}>
-                    <span>数量：<b>{fmt(it.amount)}</b></span>
-                    <span>该单需：<b>{fmtAuto(it.totalBTC)} BTC</b></span>
-                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{it.tokenId}</span>
+                    <span>
+                      数量：<b>{fmt(it.amount)}</b>
+                    </span>
+                    <span>
+                      该单需：<b>{fmtAuto(it.totalBTC)} BTC</b>
+                    </span>
+                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+                      {it.tokenId}
+                    </span>
                   </div>
                 </div>
               ))}
